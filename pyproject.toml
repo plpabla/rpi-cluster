@@ -1,5 +1,5 @@
 [project]
-name = "rpi-mtls-cluster"
+name = "rpi-cluster"
 version = "0.1.0"
 description = "Secure cluster of Raspberry Pi with local PKI and mTLS"
 requires-python = ">=3.11"
