@@ -1,0 +1,30 @@
+# Private keys and certificates — NEVER to git
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+!docs/captures/*.pem   # exception: public certs in docs, if present
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Models (large binaries)
+ml/models/*.joblib
+
+# Wireshark
+docs/captures/*.pcap.tmp
