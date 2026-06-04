@@ -1,0 +1,21 @@
+%% Architektura klastra PKI — Sprint 02 (v1 roboczy)
+%% Render: VSCode "Markdown Preview Mermaid" / mermaid.live / mmdc -i architecture.mmd -o architecture.png
+flowchart TD
+    classDef node fill:#eef5ff,stroke:#2b6cb0,stroke-width:1px,color:#1a202c;
+    classDef ca   fill:#fff5e6,stroke:#b7791f,stroke-width:2px,color:#1a202c;
+
+    pica["<b>pi-ca</b> — 192.168.100.133<br/>Online CA service <br/>FastAPI :9443<br/>🔑 Root CA (priv key)<br/>🔑 Intermediate CA (key + cert)"]:::ca
+
+    orch["<b>pi-orch</b> — 192.168.100.135<br/>Orchestrator · FastAPI :8443<br/>klient mTLS → worker"]:::node
+
+    w1["<b>pi-w1</b> — 192.168.100.173<br/>Worker (ML predykcja) · FastAPI :8443<br/>serwer mTLS"]:::node
+
+    pica --> orch
+    pica --> w1
+
+    %% Faza bootstrap: każdy węzeł startuje od CSR → pi-ca (mTLS)
+    orch -. "mTLS · POST /sign-csr (CSR)" .-> pica
+    w1   -. "mTLS · POST /sign-csr (CSR)" .-> pica
+
+    %% Faza operacyjna: orkiestrator → worker (mTLS)
+    orch == "mTLS · POST /predict" ==> w1
