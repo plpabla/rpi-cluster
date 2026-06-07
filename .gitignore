@@ -1,6 +1,7 @@
 # Private keys and certificates — NEVER to git
 *.key
 *.pem
+*.csr
 *.p12
 *.pfx
 *.crt
