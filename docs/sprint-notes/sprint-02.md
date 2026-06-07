@@ -12,9 +12,9 @@ Plan PKI gotowy "na papierze" — decyzje projektowe (hierarchia, TTL, algorytm,
 
 | Hostname | CN                           | SAN DNS                                       | SAN IP            | Rola                    |
 | -------- | ---------------------------- | --------------------------------------------- | ----------------- | ----------------------- |
-| pi-ca    | `ca.cluster.local`           | `ca.cluster.local`, `pi-ca.local`             | `192.168.100.133` | Online CA service       |
-| pi-orch  | `orchestrator.cluster.local` | `orchestrator.cluster.local`, `pi-orch.local` | `192.168.100.135` | Klient mTLS → worker    |
-| pi-w1    | `worker1.cluster.local`      | `worker1.cluster.local`, `pi-w1.local`        | `192.168.100.173` | Serwer mTLS (predykcja) |
+| pi-ca    | `ca.cluster.local`           | `ca.cluster.local`, `pi-ca.local`             | `192.168.100.181` | Online CA service       |
+| pi-orch  | `orchestrator.cluster.local` | `orchestrator.cluster.local`, `pi-orch.local` | `192.168.100.182` | Klient mTLS → worker    |
+| pi-w1    | `worker1.cluster.local`      | `worker1.cluster.local`, `pi-w1.local`        | `192.168.100.183` | Serwer mTLS (predykcja) |
 
 Domena `cluster.local` jest zarezerwowana lokalnie (RFC 6762 — `.local` to mDNS). Używamy jej świadomie zamiast np. `example.com`, żeby cert nie mógł zostać przypadkowo użyty w publicznej sieci.
 
@@ -47,7 +47,7 @@ Diagram pokazuje 3 węzły (hostname + IP + rola + port), kierunki strzałek i t
 
 ## Raport — wypełnione w tym sprincie
 
-- [x] IP wpisane w `koncepcja.tex` (3 wiersze: `192.168.100.133/135/173`) — brak `\TODO{X.X}` w sekcji Architektura
+- [x] IP wpisane w `koncepcja.tex` (3 wiersze: `192.168.100.181/182/183`) — brak `\TODO{X.X}` w sekcji Architektura
 - [x] Opis przepływu komunikacji w `koncepcja.tex` (bootstrap: CSR → `POST /sign-csr`; operacyjna: `POST /predict` orch → worker, oba przez mTLS)
 - [x] Diagram osadzony: `\includegraphics` renderuje plik z `raport/obrazy/`
 - [x] Tabela `tab:decyzje` zweryfikowana

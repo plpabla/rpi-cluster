@@ -8,9 +8,9 @@
 
 | Hostname | Model RPi | MAC               | IP              | Uwagi                      |
 | -------- | --------- | ----------------- | --------------- | -------------------------- |
-| pi-ca    | RPi 4B    | d8:3a:dd:c4:29:fa | 192.168.100.133 | Debian GNU/Linux 13 trixie |
-| pi-orch  | RPi 4B    | d8:3a:dd:2f:f0:2e | 192.168.100.135 | Debian GNU/Linux 13 trixie |
-| pi-w1    | RPi 4B    | d8:3a:dd:69:96:af | 192.168.100.173 | Debian GNU/Linux 13 trixie |
+| pi-ca    | RPi 4B    | d8:3a:dd:c4:29:fa | 192.168.100.181 | Debian GNU/Linux 13 trixie |
+| pi-orch  | RPi 4B    | d8:3a:dd:2f:f0:2e | 192.168.100.182 | Debian GNU/Linux 13 trixie |
+| pi-w1    | RPi 4B    | d8:3a:dd:69:96:af | 192.168.100.183 | Debian GNU/Linux 13 trixie |
 
 ## Co zrobiłem
 
