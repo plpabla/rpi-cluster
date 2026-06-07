@@ -56,7 +56,3 @@ Diagram pokazuje 3 węzły (hostname + IP + rola + port), kierunki strzałek i t
 
 - `\subsection{Online CA service}` — Sprint 06
 - `\subsection{Workload demonstracyjny}` — Sprint 08
-
-## Co dalej
-
-- Sprint 03 — Root CA + Intermediate CA (pierwszy "prawdziwy" kod kryptograficzny)

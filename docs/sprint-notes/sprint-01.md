@@ -42,10 +42,6 @@ Brak poważnych problemów. Wszystko działało z pierwszego podejścia.
 
 Do uzupełnienia w kroku 8 (draft sekcji "Wstęp" w `docs/report/report.md`).
 
-## Co dalej
-
-- Sprint 02: design decisions PKI (hierarchia, TTL, algorytm), naming/SAN
-
 ## Linki / commits
 
 - `3d11c3c`: sprint-01: init repo, gitignore, project structure
