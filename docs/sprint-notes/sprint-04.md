@@ -1,7 +1,7 @@
 # Sprint 04 — TLS jednostronny
 
 **Data:** 2026-06-07
-**Czas spędzony:** ~60 min (planowane: ~60)
+**Czas spędzony:** ~120 min (planowane: ~60)
 **Status:** ✅ Done
 
 ## Cel
