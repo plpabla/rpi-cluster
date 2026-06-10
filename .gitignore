@@ -6,6 +6,7 @@
 *.pfx
 *.crt
 !docs/captures/*.pem   # exception: public certs in docs, if present
+docs/captures/*keys*.log
 
 # Python
 __pycache__/

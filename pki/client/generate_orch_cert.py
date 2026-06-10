@@ -17,9 +17,9 @@ CA = Path(__file__).resolve().parent.parent / "ca"  # pki/ca/
 OUT = Path(__file__).resolve().parent  # pki/client/
 
 # Parametry węzła
-FQDN = "worker1.cluster.local"
-HOSTNAME = "pi-w1.local"
-IP = "192.168.100.183"
+FQDN = "orchestrator.cluster.local"
+HOSTNAME = "pi-orch.local"
+IP = "192.168.100.182"
 
 int_key = serialization.load_pem_private_key(
     (CA / "intermediate.key").read_bytes(), password=None
@@ -76,7 +76,7 @@ leaf = (
         critical=True,
     )
     .add_extension(
-        x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False
+        x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), critical=False
     )
     .add_extension(
         csr.extensions.get_extension_for_class(x509.SubjectAlternativeName).value,
@@ -93,7 +93,7 @@ leaf = (
 )
 
 # 4. Zapis: klucz, leaf, fullchain (leaf + intermediate)
-(OUT / "worker1.key").write_bytes(
+(OUT / "orch.key").write_bytes(
     leaf_key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
@@ -101,9 +101,9 @@ leaf = (
     )
 )
 leaf_pem = leaf.public_bytes(serialization.Encoding.PEM)
-(OUT / "worker1.pem").write_bytes(leaf_pem)
+(OUT / "orch.pem").write_bytes(leaf_pem)
 # fullchain = leaf + intermediate — klient ufa tylko Root i musi zbudować ścieżkę
-(OUT / "worker1.fullchain.pem").write_bytes(
+(OUT / "orch.fullchain.pem").write_bytes(
     leaf_pem + (CA / "intermediate.pem").read_bytes()
 )
 
