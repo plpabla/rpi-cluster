@@ -1,7 +1,7 @@
 # Sprint 05 — mTLS (wzajemne uwierzytelnianie)
 
 **Data:** 2026-06-10
-**Czas spędzony:** ~90 min (planowane: ~90; część buforu 1,5 h zeszła na debug `httpx ReadError: Broken pipe` po stronie klienta)
+**Czas spędzony:** ~120 min (planowane: ~90; część buforu 1,5 h zeszła na debug `httpx ReadError: Broken pipe` po stronie klienta)
 **Status:** ✅ Done
 
 ## Cel
@@ -10,16 +10,16 @@
 
 ## Wygenerowane artefakty
 
-| Plik                                      | Typ                                       | W gicie?              |
-| ----------------------------------------- | ----------------------------------------- | --------------------- |
-| `pki/client/generate_orch_cert.py`        | skrypt generatora leaf-certu **klienta**  | ✅ tak                |
-| `pki/client/orch.key`                     | klucz prywatny leaf klienta (ECDSA P-256) | ❌ nie                |
-| `pki/client/orch.pem`                     | certyfikat leaf klienta                   | ❌ nie                |
-| `pki/client/orch.fullchain.pem`           | leaf + intermediate (konkatenacja)        | ❌ nie                |
-| `pki/client/worker1.{key,fullchain.pem}`  | **odświeżony** leaf serwera (TTL 1 h)     | ❌ nie                |
-| `docs/captures/mtls-handshake.pcapng`     | capture handshake'u mTLS (pozytywny)      | ✅ tak                |
-| `docs/captures/mtls-handshake-open.pcapng`| ten sam handshake — wariant analizowany   | ✅ tak                |
-| `docs/captures/mtls-keys.log`             | klucze sesji TLS (SSLKEYLOGFILE)          | ❌ nie (`.gitignore`) |
+| Plik                                       | Typ                                       | W gicie?              |
+| ------------------------------------------ | ----------------------------------------- | --------------------- |
+| `pki/client/generate_orch_cert.py`         | skrypt generatora leaf-certu **klienta**  | ✅ tak                |
+| `pki/client/orch.key`                      | klucz prywatny leaf klienta (ECDSA P-256) | ❌ nie                |
+| `pki/client/orch.pem`                      | certyfikat leaf klienta                   | ❌ nie                |
+| `pki/client/orch.fullchain.pem`            | leaf + intermediate (konkatenacja)        | ❌ nie                |
+| `pki/client/worker1.{key,fullchain.pem}`   | **odświeżony** leaf serwera (TTL 1 h)     | ❌ nie                |
+| `docs/captures/mtls-handshake.pcapng`      | capture handshake'u mTLS (pozytywny)      | ✅ tak                |
+| `docs/captures/mtls-handshake-open.pcapng` | ten sam handshake — wariant analizowany   | ✅ tak                |
+| `docs/captures/mtls-keys.log`              | klucze sesji TLS (SSLKEYLOGFILE)          | ❌ nie (`.gitignore`) |
 
 Parametry leaf klienta zgodne z decyzjami S02: **ECDSA P-256**, SAN = FQDN + hostname + IP, TTL **1 h**, podpis kluczem Intermediate. **Jedyna istotna różnica vs worker:** EKU `clientAuth` zamiast `serverAuth`.
 
@@ -95,13 +95,13 @@ Analiza wykonana skryptem (parser pcapng w Pythonie — `tshark` niedostępny na
 
 ## Metadane pliku
 
-| Pole              | Wartość                                                            |
-| ----------------- | ------------------------------------------------------------------ |
-| Liczba pakietów   | 21                                                                 |
-| Rozmiar           | 9560 B                                                             |
-| Link type         | LINUX_SLL2 (276) — capture przez `tcpdump -i any`                  |
-| Gdzie robiony     | `pi-orch` (backend OpenSSL honoruje `SSLKEYLOGFILE`)               |
-| SHA-256           | `55a241c9cfe7b660e58f837a4a00c2c10fdb415201408df1fd016913532d62bc` |
+| Pole            | Wartość                                                            |
+| --------------- | ------------------------------------------------------------------ |
+| Liczba pakietów | 21                                                                 |
+| Rozmiar         | 9560 B                                                             |
+| Link type       | LINUX_SLL2 (276) — capture przez `tcpdump -i any`                  |
+| Gdzie robiony   | `pi-orch` (backend OpenSSL honoruje `SSLKEYLOGFILE`)               |
+| SHA-256         | `55a241c9cfe7b660e58f837a4a00c2c10fdb415201408df1fd016913532d62bc` |
 
 ## Strony połączenia
 
@@ -118,40 +118,40 @@ Analiza wykonana skryptem (parser pcapng w Pythonie — `tshark` niedostępny na
 
 ## Przebieg handshake'u (mTLS, pozytywny)
 
-| Ramka | Czas (ms) | Kierunek | Opis                                                                                                                           |
-| ----- | --------- | -------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| 1–3   | 0,0–0,2   | TCP      | 3-way handshake (SYN / SYN,ACK / ACK)                                                                                           |
-| 4–5   | 14,1      | klient→serwer | **ClientHello** (rekord 1566 B; `key_share` X25519MLKEM768, SNI `pi-w1.local`) — rozbity na 2 segmenty                     |
-| 6     | 14,3      | serwer→klient | ACK                                                                                                                       |
+| Ramka | Czas (ms) | Kierunek      | Opis                                                                                                                                                                                                                           |
+| ----- | --------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1–3   | 0,0–0,2   | TCP           | 3-way handshake (SYN / SYN,ACK / ACK)                                                                                                                                                                                          |
+| 4–5   | 14,1      | klient→serwer | **ClientHello** (rekord 1566 B; `key_share` X25519MLKEM768, SNI `pi-w1.local`) — rozbity na 2 segmenty                                                                                                                         |
+| 6     | 14,3      | serwer→klient | ACK                                                                                                                                                                                                                            |
 | 7     | 18,8      | serwer→klient | **ServerHello** (1210 B) + CCS + zaszyfrowany lot serwera jako Application Data: `{EncryptedExtensions}` 23 B, **`{CertificateRequest}` 79 B**, `{Certificate}` (serwer) 1109 B, `{CertificateVerify}` 96 B, `{Finished}` 69 B |
-| 8     | 18,8      | klient→serwer | ACK                                                                                                                       |
-| 9     | 24,9      | klient→serwer | **drugi lot klienta** — CCS + **`{Certificate}` (klient) 781 B** + **`{CertificateVerify}` 95 B** + `{Finished}` 69 B ← _kluczowa różnica vs S04_ |
-| 10    | 25,3      | klient→serwer | Application Data 103 B = zaszyfrowany `GET /health`                                                                        |
-| 11    | 29,5      | klient→serwer | retransmisja `GET /health` (103 B)                                                                                         |
-| 12    | 29,6      | serwer→klient | ACK                                                                                                                       |
-| 13    | 33,1      | serwer→klient | Application Data 2×842 B = **2× NewSessionTicket** (TLS 1.3; OpenSSL domyślnie wysyła 2 bilety)                            |
-| 14    | 33,1      | klient→serwer | ACK                                                                                                                       |
-| 15    | 36,3      | serwer→klient | Application Data 142 + 47 B = **HTTP 200** + `{"status":"ok","node":"pi-w1"}`                                              |
-| 16–21 | 36,6–37,2 | TCP/TLS  | `close_notify` (klient 19 B w r.16, serwer 19 B w r.18) + zamknięcie (FIN / RST)                                              |
+| 8     | 18,8      | klient→serwer | ACK                                                                                                                                                                                                                            |
+| 9     | 24,9      | klient→serwer | **drugi lot klienta** — CCS + **`{Certificate}` (klient) 781 B** + **`{CertificateVerify}` 95 B** + `{Finished}` 69 B ← _kluczowa różnica vs S04_                                                                              |
+| 10    | 25,3      | klient→serwer | Application Data 103 B = zaszyfrowany `GET /health`                                                                                                                                                                            |
+| 11    | 29,5      | klient→serwer | retransmisja `GET /health` (103 B)                                                                                                                                                                                             |
+| 12    | 29,6      | serwer→klient | ACK                                                                                                                                                                                                                            |
+| 13    | 33,1      | serwer→klient | Application Data 2×842 B = **2× NewSessionTicket** (TLS 1.3; OpenSSL domyślnie wysyła 2 bilety)                                                                                                                                |
+| 14    | 33,1      | klient→serwer | ACK                                                                                                                                                                                                                            |
+| 15    | 36,3      | serwer→klient | Application Data 142 + 47 B = **HTTP 200** + `{"status":"ok","node":"pi-w1"}`                                                                                                                                                  |
+| 16–21 | 36,6–37,2 | TCP/TLS       | `close_notify` (klient 19 B w r.16, serwer 19 B w r.18) + zamknięcie (FIN / RST)                                                                                                                                               |
 
 ## Kluczowa obserwacja: mTLS „po rozmiarze lotów"
 
 W TLS 1.3 wszystko po `ServerHello` jest zaszyfrowane kluczem handshake'u — bez `mtls-keys.log` komunikaty widać tylko jako `Application Data`. Dowodem na obecność uwierzytelnienia klienta jest więc **rozmiar lotów**, a nie odczytana treść:
 
-| Lot                  | TLS jednostronny (S04)                                        | mTLS (S05)                                                                                         |
-| -------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| Lot serwera          | EncryptedExtensions, Certificate, CertificateVerify, Finished | **+ `CertificateRequest` (79 B)**                                                                  |
-| Drugi lot klienta    | tylko CCS + `Finished` (ramka 22, kilkadziesiąt B)            | CCS + **`Certificate` 781 B + `CertificateVerify` 95 B** + `Finished` 69 B (payload **966 B**)     |
+| Lot               | TLS jednostronny (S04)                                        | mTLS (S05)                                                                                     |
+| ----------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Lot serwera       | EncryptedExtensions, Certificate, CertificateVerify, Finished | **+ `CertificateRequest` (79 B)**                                                              |
+| Drugi lot klienta | tylko CCS + `Finished` (ramka 22, kilkadziesiąt B)            | CCS + **`Certificate` 781 B + `CertificateVerify` 95 B** + `Finished` 69 B (payload **966 B**) |
 
 Serwer dorzuca `CertificateRequest`, a klient — zamiast samego `Finished` — odsyła własny `Certificate` (pełny łańcuch: leaf + intermediate, 781 B) i `CertificateVerify`. **Rosnący drugi lot klienta to bezpośredni, obserwowalny na poziomie pakietów dowód mTLS.**
 
 ## Pomiary czasowe (orientacyjne, 1 wywołanie)
 
-| Metryka                                              | Wartość   |
-| ---------------------------------------------------- | --------- |
-| ClientHello (r.4) → drugi lot klienta / `Finished` (r.9) | ~10,8 ms  |
-| ClientHello (r.4) → odpowiedź `200` + JSON (r.15)    | ~22,2 ms  |
-| Cała wymiana (r.1 → r.21)                             | ~37,2 ms  |
+| Metryka                                                  | Wartość  |
+| -------------------------------------------------------- | -------- |
+| ClientHello (r.4) → drugi lot klienta / `Finished` (r.9) | ~10,8 ms |
+| ClientHello (r.4) → odpowiedź `200` + JSON (r.15)        | ~22,2 ms |
+| Cała wymiana (r.1 → r.21)                                | ~37,2 ms |
 
 > Pełne pomiary porównawcze TLS vs mTLS (mediana/p95, 20 captures) → **Sprint 09**.
 
