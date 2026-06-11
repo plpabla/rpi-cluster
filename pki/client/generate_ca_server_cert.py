@@ -17,9 +17,9 @@ CA = Path(__file__).resolve().parent.parent / "ca"  # pki/ca/
 OUT = Path(__file__).resolve().parent  # pki/client/
 
 # Parametry węzła
-FQDN = "worker1.cluster.local"
-HOSTNAME = "pi-w1.local"
-IP = "192.168.100.183"
+FQDN = "ca.cluster.local"
+HOSTNAME = "pi-ca.local"
+IP = "192.168.100.181"
 
 int_key = serialization.load_pem_private_key(
     (CA / "intermediate.key").read_bytes(), password=None
@@ -59,7 +59,7 @@ leaf = (
     .public_key(csr.public_key())
     .serial_number(x509.random_serial_number())
     .not_valid_before(now)
-    .not_valid_after(now + timedelta(hours=1))  # TTL leaf = 1h (decyzja S02)
+    .not_valid_after(now + timedelta(hours=24))  # TTL leaf = 1h (decyzja S02)
     .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
     .add_extension(
         x509.KeyUsage(
@@ -93,7 +93,7 @@ leaf = (
 )
 
 # 4. Zapis: klucz, leaf, fullchain (leaf + intermediate)
-(OUT / "worker1.key").write_bytes(
+(OUT / "ca-server.key").write_bytes(
     leaf_key.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.PKCS8,
@@ -101,9 +101,9 @@ leaf = (
     )
 )
 leaf_pem = leaf.public_bytes(serialization.Encoding.PEM)
-(OUT / "worker1.pem").write_bytes(leaf_pem)
+(OUT / "ca-server.pem").write_bytes(leaf_pem)
 # fullchain = leaf + intermediate — klient ufa tylko Root i musi zbudować ścieżkę
-(OUT / "worker1.fullchain.pem").write_bytes(
+(OUT / "ca-server.fullchain.pem").write_bytes(
     leaf_pem + (CA / "intermediate.pem").read_bytes()
 )
 
