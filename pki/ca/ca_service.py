@@ -7,7 +7,7 @@ from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 from cryptography.hazmat.primitives import hashes, serialization
 from fastapi import FastAPI, HTTPException, Request, Response
 
-from util import client_cn_from_mtls, sign_csr
+from .util import client_cn_from_mtls, sign_csr
 
 CA_DIR = Path(__file__).resolve().parent  # pki/ca/
 ALLOWED_DOMAIN = "cluster.local"  # CSR.CN must have this suffix
