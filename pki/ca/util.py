@@ -1,12 +1,22 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from cryptography import x509
 from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 from cryptography.hazmat.primitives import hashes, serialization
-from fastapi import Request, Response
+from fastapi import Request
 
 
 LEAF_TTL = timedelta(hours=1)  # decision S02
+
+_CA_DIR = Path(__file__).resolve().parent
+
+INT_KEY = serialization.load_pem_private_key(
+    (_CA_DIR / "intermediate.key").read_bytes(), password=None
+)
+INT_CERT = x509.load_pem_x509_certificate((_CA_DIR / "intermediate.pem").read_bytes())
+INT_PEM = (_CA_DIR / "intermediate.pem").read_bytes()
+INT_SKI = INT_CERT.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
 
 
 def client_cn_from_mtls(request: Request) -> str | None:

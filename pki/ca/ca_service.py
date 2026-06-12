@@ -1,27 +1,16 @@
 import logging
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import datetime, timezone
 
 from cryptography import x509
-from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.x509.oid import NameOID
 from fastapi import FastAPI, HTTPException, Request, Response
 
-from .util import client_cn_from_mtls, sign_csr
+from .util import client_cn_from_mtls, sign_csr as _sign_csr, LEAF_TTL, INT_CERT, INT_PEM
 
-CA_DIR = Path(__file__).resolve().parent  # pki/ca/
 ALLOWED_DOMAIN = "cluster.local"  # CSR.CN must have this suffix
 
 logger = logging.getLogger("ca_service")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-# Load CA keys at startup — in memory throughout service lifetime
-INT_KEY = serialization.load_pem_private_key(
-    (CA_DIR / "intermediate.key").read_bytes(), password=None
-)
-INT_CERT = x509.load_pem_x509_certificate((CA_DIR / "intermediate.pem").read_bytes())
-INT_PEM = (CA_DIR / "intermediate.pem").read_bytes()
-INT_SKI = INT_CERT.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
 
 app = FastAPI(title="rpi-mtls-ca-service")
 
@@ -70,7 +59,7 @@ async def sign_csr(request: Request) -> Response:
         raise HTTPException(403, f"CN mismatch: client={client_cn}, CSR={csr_cn}")
 
     # 5+6. Sign and return
-    leaf_pem = sign_csr(csr)
+    leaf_pem = _sign_csr(csr)
     logger.info(
         "SIGNED CN=%s valid until %s", csr_cn, datetime.now(timezone.utc) + LEAF_TTL
     )
