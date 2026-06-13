@@ -76,7 +76,14 @@ leaf = (
         critical=True,
     )
     .add_extension(
-        x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False
+        # Worker is both a server (serves workloads) and a client (calls the CA /
+        # orchestrator over mTLS). serverAuth alone makes the cert fail purpose
+        # verification when presented as a client cert ("unsuitable certificate
+        # purpose"), so both EKUs are required.
+        x509.ExtendedKeyUsage(
+            [ExtendedKeyUsageOID.SERVER_AUTH, ExtendedKeyUsageOID.CLIENT_AUTH]
+        ),
+        critical=False,
     )
     .add_extension(
         csr.extensions.get_extension_for_class(x509.SubjectAlternativeName).value,

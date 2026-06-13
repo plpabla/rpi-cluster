@@ -88,23 +88,34 @@ SSL_CA_CERTS = str(_HERE / "root.pem")
 
 
 def ssl_context_factory(config, default_ssl_context_factory):
-    """Build the mTLS SSLContext, applying a TLS 1.3 client-auth workaround.
+    """Build the mTLS SSLContext from scratch.
 
-    On this pi-ca stack (uvicorn 0.49 / CPython 3.13 / OpenSSL 3.5 negotiating the
-    X25519MLKEM768 hybrid), requiring a client certificate under TLS 1.3 resets the
-    connection before the request reaches the ASGI app — uvicorn logs nothing. The
-    handshake completes, the body uploads, then the SSL/asyncio transport aborts
-    (RST). Pinning the server to TLS 1.2 keeps client-cert verification ON
-    (CERT_REQUIRED) while sidestepping the bug, because in TLS 1.2 the client
-    Certificate is exchanged during the handshake, not in a post-handshake flight.
+    Built from scratch (not via default_ssl_context_factory) to guarantee that
+    load_verify_locations and verify_mode are applied — uvicorn 0.49's default
+    factory was observed silently dropping client certs because the CA bundle
+    was not loaded into the context, causing CERT_REQUIRED to reject every cert.
 
-    Toggle with env var CA_FORCE_TLS12 (default "1"). Set CA_FORCE_TLS12=0 once the
-    OpenSSL/Python stack on pi-ca is upgraded to return to TLS 1.3.
+    TLS 1.2 pin: uvicorn 0.49 / CPython 3.13 / OpenSSL 3.5 negotiates the
+    X25519MLKEM768 post-quantum hybrid; client-auth under TLS 1.3 with that
+    key exchange aborts the connection silently (RST) before reaching ASGI.
+    TLS 1.2 keeps CERT_REQUIRED ON while sidestepping the bug (client cert is
+    exchanged during the handshake, not in a post-handshake flight).
+
+    Toggle with env var CA_FORCE_TLS12 (default "1"). Set =0 after OpenSSL
+    upgrade to re-enable TLS 1.3.
     """
-    ctx = default_ssl_context_factory()  # already has cert/key/ca + CERT_REQUIRED
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(SSL_CERTFILE, SSL_KEYFILE)
+    ctx.load_verify_locations(SSL_CA_CERTS)
+    ctx.verify_mode = ssl.CERT_REQUIRED
     if os.environ.get("CA_FORCE_TLS12", "1") == "1":
         ctx.maximum_version = ssl.TLSVersion.TLSv1_2
-        logger.info("mTLS: pinned maximum TLS version to 1.2 (CA_FORCE_TLS12=1)")
+        logger.info(
+            "mTLS: SSLContext built from scratch — CERT_REQUIRED, max TLS 1.2"
+            " (CA_FORCE_TLS12=1)"
+        )
+    else:
+        logger.info("mTLS: SSLContext built from scratch — CERT_REQUIRED, TLS 1.3 allowed")
     return ctx
 
 
@@ -121,5 +132,6 @@ if __name__ == "__main__":
         ssl_cert_reqs=ssl.CERT_REQUIRED,  # mTLS — client cert verification stays ON
         ssl_context_factory=ssl_context_factory,
         http="h11",
-        log_level="info",
+        loop="asyncio",  # rule out uvloop: silent mTLS client-cert RST suspect
+        log_level="debug",
     )

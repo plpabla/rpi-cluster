@@ -1,8 +1,8 @@
 # Sprint 06 — Online CA service (`POST /sign-csr`)
 
 **Data:** 2026-06-12 (ostatnia aktualizacja: 2026-06-13)
-**Czas spędzony:** ~120 min i liczę — większość buforu zeszła na debug warstwy mTLS transport
-**Status:** 🚧 W TOKU — zatrzymany na weryfikacji obejścia TLS (sek. 2.2, po kroku 8)
+**Czas spędzony:** ~180 min i liczę — większość buforu na debug warstwy mTLS transport + ssl_context
+**Status:** 🚧 W TOKU — `ssl_context_factory` przebudowany od zera, czeka na test E2E
 
 ## Cel
 
@@ -16,7 +16,8 @@ dostaje świeży leaf-cert (TTL 1 h), zweryfikowany względem `root.pem` + `inte
 - [x] `pki/ca/ca_service.py` zaimplementowany (`/health`, `/sign-csr`, walidacja CN, podpis Intermediate)
 - [x] `/health` lokalnie (bez TLS) zwraca `{"status":"ok",...}`
 - [x] uvicorn startuje na `pi-ca` `0.0.0.0:9443` pod mTLS — listener żyje
-- [ ] **`pi-w1` dostaje HTTP 200 + leaf-cert** ← BLOKADA (RST na transport layer, patrz niżej)
+- [x] `python -m pki.ca.ca_service` startuje z TLS 1.2 pin (log: `SSLContext built from scratch`)
+- [ ] **`pi-w1` dostaje HTTP 200 + leaf-cert** ← BLOKADA (patrz niżej)
 - [ ] `openssl verify` zwróconego leafa OK, `not_after` ≈ +1 h
 - [ ] Test negatywny (obcy CN → 403)
 - [ ] Kod zmergowany do `main`
@@ -53,7 +54,7 @@ Pierwszy E2E POST CSR z `pi-w1` → **`Connection reset by peer`**. Stąd cała 
 
 ---
 
-## 🔴 Blokada: RST przy włączonej weryfikacji certu klienta (TLS 1.3)
+## 🔴 Blokada 1: RST przy włączonej weryfikacji certu klienta (TLS 1.3) ← WYJAŚNIONA
 
 ### Objaw
 
@@ -72,121 +73,177 @@ ani tracebacku, ani access logu. Handshake TLS kończy się poprawnie (`Request 
 
 **Izolacja:** awaria odpala się dokładnie przy **weryfikacji certu klienta** (`ssl.CERT_REQUIRED`),
 niezależnie od metody i body. Połączenie ginie w warstwie SSL/asyncio **zanim** request trafi do
-ASGI → stąd zero logów. To wyklucza: httptools (pkt 4), logikę aplikacji (pkt 3), interleaving
-body (goły GET), zły host (handshake się kończy, `CERT verify ok`).
+ASGI → stąd zero logów.
 
-**Hipoteza przyczyny:** stack `uvicorn 0.49.0 / CPython 3.13.5 / OpenSSL 3.5` negocjuje hybrydę
-post-kwantową `X25519MLKEM768` (widoczna w logu curl: `TLS_AES_256_GCM_SHA384 / X25519MLKEM768`).
-W TLS 1.3 cert klienta leci w „post-handshake" flighcie razem z pierwszymi danymi aplikacyjnymi;
-serwerowy `ssl`/asyncio wywala się przy client-auth na tym buildzie OpenSSL i ścina transport (RST),
-po cichu. W TLS 1.2 cert klienta wymieniany jest w trakcie handshake'u — stąd kierunek obejścia.
+**Przyczyna (hipoteza potwierdzona przez obejście):** stack `uvicorn 0.49.0 / CPython 3.13.5 /
+OpenSSL 3.5` negocjuje hybrydę post-kwantową `X25519MLKEM768`. W TLS 1.3 cert klienta leci
+w „post-handshake" flighcie razem z pierwszymi danymi aplikacyjnymi; serwerowy `ssl`/asyncio
+wywala się przy client-auth na tym buildzie OpenSSL i ścina transport (RST), po cichu.
+W TLS 1.2 cert klienta wymieniany jest w trakcie handshake'u — stąd kierunek obejścia.
 
-### Otwarte pytanie: IP `pi-ca`
+**Obejście:** `ssl_context_factory` z `maximum_version = ssl.TLSVersion.TLSv1_2`, sterowane
+przez `CA_FORCE_TLS12=1` (domyślnie). Po upgradzie OpenSSL/Pythona ustawić `=0` → powrót do TLS 1.3.
+Wersje na `pi-ca`: `uvicorn 0.49.0 / CPython 3.13.5`
+
+---
+
+## 🔴 Blokada 2: ASGI TLS extension pusta (uvicorn nie implementuje) ← NAPRAWIONA
+
+### Objaw
+
+Po odblokowaniu transportu (krok 7 bez CERT_REQUIRED) — w logach:
+```
+DEBUG extensions keys: []
+DEBUG tls_ext type: NoneType
+WARNING no ASGI tls extension — denying signature (fail-closed)
+HTTP 403
+```
+
+### Diagnoza
+
+Uvicorn 0.49 **nie implementuje** `scope["extensions"]["tls"]` ani `client_cert_chain`
+(zweryfikowane przez Context7 + empirycznie). Kod próbował wyciągnąć CN klienta przez
+tę extension → zawsze `None` → fail-closed 403 przy każdym żądaniu.
+
+### Fix — `MTLSPeerCNMiddleware` w `pki/ca/util.py`
+
+Zamiast ASGI extension, middleware sięga do `ssl.SSLObject` przez uvicorn-specific path:
+```
+send.__self__          → H11Protocol (bound method → instancja protokołu)
+  .transport           → asyncio.SSLTransport
+  .get_extra_info("ssl_object")  → ssl.SSLObject
+  .getpeercert()       → dict z CN klienta (gdy CERT_REQUIRED i handshake OK)
+```
+
+CN wstrzykiwany do `scope["extensions"]["_peer_cn"]`. `client_cn_from_mtls` czyta z `_peer_cn`
+najpierw, fallback do ASGI TLS extension (kompatybilność z przyszłymi wersjami uvicorn).
+
+`ca_service.py`: `app = MTLSPeerCNMiddleware(app)` po definicjach tras — musi być na zewnątrz
+FastAPI, żeby middleware dostało surowy `send` od uvicorn (nie zawinięty przez Starlette).
+
+---
+
+## 🔴 Blokada 3: TLS 1.2 + CERT_REQUIRED → `unexpected eof while reading` ← AKTYWNA
+
+### Objaw (2026-06-13, po wdrożeniu TLS 1.2 pin + MTLSPeerCNMiddleware)
+
+```
+* TLSv1.2 (OUT), TLS handshake, Finished (20):
+* TLSv1.2 (OUT), TLS alert, decode error (562):
+curl: (35) TLS connect error: error:0A000126:SSL routines::unexpected eof while reading
+```
+
+Handshake TLS 1.2 przebiega do końca fazy klienckiej (Certificate → ClientKeyExchange →
+CertificateVerify → ChangeCipherSpec → Finished), ale serwer **nigdy nie odsyła swojego
+ChangeCipherSpec + Finished** — zamknięcie TCP bez TLS alert. Uvicorn nadal **nie loguje nic**.
+
+Cert klienta (`worker1.fullchain.pem`) jest świeży:
+```
+notBefore=Jun 13 09:12:33 2026 GMT
+notAfter=Jun 13 10:12:33 2026 GMT   ← 1h TTL
+```
+Aktualny czas: 09:13 UTC → cert ważny. Cert serwera ważny do Jun 14 09:12 UTC.
+
+### Diagnoza
+
+Wzorzec: serwer pada tuż po odebraniu `CertificateVerify` od klienta, bez żadnego TLS alert
+→ nieobsługiwany wyjątek ssl/asyncio, analogiczny do Blokady 1 ale teraz w TLS 1.2.
+
+**Hipoteza:** `default_ssl_context_factory()` w uvicorn 0.49 **nie ładuje `ssl_ca_certs`**
+do kontekstu mimo `ssl_cert_reqs=ssl.CERT_REQUIRED` w `uvicorn.run()` → trust store pusty
+→ serwer nie może zweryfikować łańcucha klienta → cichy RST bez logu.
+
+### Fix — `ssl_context_factory` budowany od zera
+
+Zamiast `ctx = default_ssl_context_factory()` (która może nie aplikować CA certs) — pełna
+kontrola kontekstu:
+
+```python
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain(SSL_CERTFILE, SSL_KEYFILE)
+ctx.load_verify_locations(SSL_CA_CERTS)   # ← kluczowe: jawne załadowanie CA
+ctx.verify_mode = ssl.CERT_REQUIRED
+ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+```
+
+Status: **kod napisany, scp na `pi-ca` i test jeszcze niewykonane.**
+
+---
+
+## Otwarte pytanie: IP `pi-ca`
 
 Log curl pokazuje `IPv4: 192.168.100.133`, a pre-flight checklist sprintu zapisuje `pi-ca` jako
 `192.168.100.181` (taki też IP jest w SAN certu serwera). DNS name match (`pi-ca.local`) ratuje
-handshake, ale przy zmianie IP (DHCP) walidacja IP-SAN przestanie działać → do potwierdzenia
-`ssh pi@pi-ca.local hostname` + aktualizacja checklisty/SAN.
-
----
-
-## 🛠️ Zmiana wprowadzona teraz (kod)
-
-`pki/ca/ca_service.py` dostał blok `__main__` + funkcję `ssl_context_factory` (oficjalny mechanizm
-uvicorna do TLS-a poza flagami CLI — zweryfikowane w dokumentacji przez Context7). Factory bierze
-domyślny `SSLContext` (ma już cert/key/ca + `CERT_REQUIRED`) i **przypina `maximum_version =
-TLSv1_2`** pod flagą env `CA_FORCE_TLS12` (domyślnie `1`). **Weryfikacja certu klienta zostaje ON.**
-
-Uruchamianie zmienia się z gołego CLI uvicorna na: `python -m pki.ca.ca_service`.
-
----
-
-## ⏸️ Punkt zatrzymania (gdzie dokładnie jestem)
-
-- Kod `ssl_context_factory` + `__main__` **napisany lokalnie na laptopie**, kompiluje się.
-- **Jeszcze NIE** zescp-owany na `pi-ca` i **NIE** uruchomiony — na `pi-ca` wciąż chodzi stary
-  proces uvicorn z gołego CLI (`--ssl-cert-reqs 2 --http h11`), patrz `ps aux`.
-- Testy A/B (TLS 1.2 vs `--curves X25519`) **jeszcze nie wykonane** — field notes kroku 7 puste.
-- Hipoteza ML-KEM/TLS 1.3 **niepotwierdzona empirycznie** (na razie tylko z analizy logów).
+handshake, ale przy zmianie IP (DHCP) walidacja IP-SAN przestanie działać → do potwierdzenia:
+```bash
+ssh pi@pi-ca.local hostname
+ip addr show | grep 192.168
+```
 
 ---
 
 ## ▶️ Następny krok (dokładnie od tego ruszam)
 
-1. **Potwierdź przyczynę — 2 testy curl z `pi-w1`** (na stary, wciąż działający serwer :9443):
+1. **Wdróż nową `ssl_context_factory`** (od zera, nie `default_ssl_context_factory()`):
 
 ```bash
-# A) Czy to TLS 1.3? Wymuś TLS 1.2 (cert klienta wymieniany w handshake)
+# z laptopa
+scp pki/ca/ca_service.py pi@pi-ca.local:~/rpi-cluster/pki/ca/
+# na pi-ca: Ctrl-C stary proces, restart
+python -m pki.ca.ca_service
+# log: SSLContext built from scratch — CERT_REQUIRED, max TLS 1.2 (CA_FORCE_TLS12=1)
+```
+
+2. **Powtórz test** (z `pi-w1`):
+
+```bash
 curl -v --tlsv1.2 --tls-max 1.2 \
     --cacert pki/ca/root.pem \
-    --cert pki/client/worker1.fullchain.pem --key pki/client/worker1.key \
-    https://pi-ca.local:9443/health
-
-# B) Zostań na TLS 1.3, ale wytnij hybrydę ML-KEM (klasyczna grupa X25519)
-curl -v --curves X25519 \
-    --cacert pki/ca/root.pem \
-    --cert pki/client/worker1.fullchain.pem --key pki/client/worker1.key \
-    https://pi-ca.local:9443/health
-```
-
-Interpretacja: **A działa, B nie** → ML-KEM + client-auth. **A i B działają** → problem z grupą
-ML-KEM. **oba RST** → szerszy problem client-auth w stacku. Na `pi-ca` zanotuj wersję:
-`python -c "import ssl; print(ssl.OPENSSL_VERSION)"` + `openssl version`.
-
-2. **Wdróż nowy entrypoint** (TLS 1.2 pin, cert checking zostaje):
-
-```bash
-# z laptopa — po każdej zmianie pliku
-scp pki/ca/ca_service.py pi-ca.local:~/rpi-cluster/pki/ca/
-
-# na pi-ca, w venv — zabij stary proces uvicorna, odpal nowy:
-cd ~/rpi-cluster && source .venv/bin/activate
-python -m pki.ca.ca_service
-# log powinien pokazać: mTLS: pinned maximum TLS version to 1.2 (CA_FORCE_TLS12=1)
-```
-
-> Po naprawie stacku (upgrade OpenSSL/Pythona) wyłącz obejście:
-> `CA_FORCE_TLS12=0 python -m pki.ca.ca_service` → wraca na TLS 1.3.
-
-3. **Powtórz POST CSR** — `/health` i `/sign-csr` powinny już odpowiadać (a nie RST):
-
-```bash
-curl -v --cacert pki/ca/root.pem \
     --cert pki/client/worker1.fullchain.pem --key pki/client/worker1.key \
     -H "Content-Type: application/x-pem-file" \
     --data-binary @/tmp/asgi-debug.csr \
     https://pi-ca.local:9443/sign-csr
 ```
 
----
+Oczekiwane po naprawie: HTTP 200 + PEM cert w odpowiedzi.
 
-## ⚠️ Druga ściana (spodziewana zaraz po odblokowaniu transportu)
+3. **Jeśli nadal EOF** — dodatkowa diagnostyka:
 
-**Uvicorn NIE implementuje ASGI TLS extension** — w jego dokumentacji nie ma
-`scope["extensions"]["tls"]` ani `client_cert_chain` (zweryfikowane przez Context7; uvicorn
-wystawia tylko `ssl_*` flagi + `ssl_context_factory`, brak mechanizmu przekazania certu klienta
-do aplikacji). Czyli `client_cn_from_mtls()` zwróci `None` → fail-closed
-`403 "could not establish mTLS client identity"` **zawsze**, mimo poprawnego mTLS.
+```bash
+# Sprawdź ile certów jest w fullchain (powinny być 2: leaf + intermediate)
+grep -c "BEGIN CERTIFICATE" pki/client/worker1.fullchain.pem
 
-Diagnoza: po odblokowaniu transportu zrób POST CSR i sprawdź w logu linie `DEBUG extensions keys:`
-(debug-print jest jeszcze w `pki/ca/util.py`). Jeśli `tls` tam nie ma — potwierdza brak extension.
+# Zweryfikuj łańcuch ręcznie
+openssl verify -CAfile pki/ca/root.pem \
+    -untrusted pki/ca/intermediate.pem pki/client/worker1.pem
 
-Realne opcje (do decyzji w następnym kroku, **nie** wyłączamy weryfikacji certu):
-- terminacja mTLS na lokalnym **nginx** + przekazanie CN nagłówkiem do uvicorna,
-- własne middleware/`Protocol` sięgające `transport.get_extra_info("ssl_object").getpeercert()`.
+# openssl s_server jako bypass test Pythona (na pi-ca):
+openssl s_server \
+    -cert pki/client/ca-server.fullchain.pem \
+    -key  pki/client/ca-server.key \
+    -CAfile pki/ca/root.pem \
+    -Verify 2 -tls1_2 -accept 9444
+# z pi-w1:
+openssl s_client \
+    -CAfile pki/ca/root.pem \
+    -cert pki/client/worker1.fullchain.pem \
+    -key  pki/client/worker1.key \
+    -tls1_2 -connect pi-ca.local:9444
+# Jeśli s_server+s_client działa → bug w Python/uvicorn. Jeśli pada → problem z łańcuchem certs.
+```
 
 ---
 
 ## TODO przed zamknięciem sprintu
 
-- [ ] Testy A/B (pkt 1) → potwierdzić root cause + zanotować wersję OpenSSL
-- [ ] Wdrożyć i zweryfikować transport przez TLS 1.2 pin (`python -m pki.ca.ca_service`)
-- [ ] Potwierdzić IP `pi-ca` (`.133` vs `.181`) → ew. update checklisty + SAN certu
-- [ ] Rozwiązać brak ASGI TLS extension (druga ściana) → realne `client_cn`
+- [x] Wdrożyć i zweryfikować transport przez TLS 1.2 pin (`python -m pki.ca.ca_service`)
+- [x] Rozwiązać brak ASGI TLS extension (`MTLSPeerCNMiddleware` → `send.__self__.transport`)
+- [x] Usunąć debug-print z `pki/ca/util.py`
+- [ ] **Naprawić Blokadę 3** (`ssl_context_factory` od zera, test E2E → 200)
 - [ ] Test pozytywny (CN=worker1 → 200) i negatywny (CN=orchestrator → 403)
 - [ ] `openssl verify -CAfile root.pem -untrusted intermediate.pem <leaf>` → OK, `not_after` ≈ +1 h
-- [ ] Usunąć debug-print z `pki/ca/util.py`
-- [ ] Udokumentować decyzję TLS 1.2 jako **tymczasową** (regresja bezpieczeństwa do zdjęcia)
+- [ ] Potwierdzić IP `pi-ca` (`.133` vs `.181`) → ew. update SAN certu
+- [ ] Udokumentować decyzję TLS 1.2 jako **tymczasową** (regresja bezpieczeństwa do zdjęcia po upgradzie OpenSSL)
 - [ ] Kod do `main` + inkrement w `koncepcja.tex` (`sec:online_ca`)
 
 ---
@@ -194,6 +251,19 @@ Realne opcje (do decyzji w następnym kroku, **nie** wyłączamy weryfikacji cer
 ## „A-ha" do raportu
 
 Auto-bootstrap CA i mTLS na samym serwisie CA odsłaniają realny problem warstwy transportowej,
-którego nie widać w teorii: **post-kwantowy hybrydowy KEM (X25519MLKEM768) + wymagany cert klienta
-pod TLS 1.3** wykłada `ssl`/asyncio po cichu (RST bez logu). Lekcja: przy mTLS w Pythonie trzeba
-panować nad wersją TLS i grupami przez własny `SSLContext`, a nie polegać na domyślach OpenSSL 3.5.
+którego nie widać w teorii. Trzy ściany z rzędu:
+
+1. **Post-kwantowy hybrydowy KEM (X25519MLKEM768) + wymagany cert klienta pod TLS 1.3** wykłada
+   `ssl`/asyncio po cichu (RST bez logu). Lekcja: przy mTLS w Pythonie trzeba panować nad wersją
+   TLS i grupami przez własny `SSLContext`, nie polegać na domyślach OpenSSL 3.5.
+
+2. **Uvicorn nie implementuje ASGI TLS extension** — standardowy mechanizm przekazania certu klienta
+   do aplikacji (`scope["extensions"]["tls"]`) nie istnieje w 0.49. Obejście: introspekcja
+   `ssl.SSLObject` przez `send.__self__.transport` (uvicorn-internal API, niestabilne między
+   wersjami). Docelowo: nginx jako TLS terminator + `X-SSL-Client-CN` header to solidniejsze
+   rozwiązanie w produkcji.
+
+3. **`default_ssl_context_factory()` w uvicorn 0.49 nie aplikuje `ssl_ca_certs`** (hipoteza) —
+   przy `CERT_REQUIRED` trust store pusty → cichy RST. Lekcja: przy `ssl_context_factory` nigdy
+   nie zakładać że parametry z `uvicorn.run()` trafiły do kontekstu — budować od zera z jawnym
+   `load_verify_locations`.
