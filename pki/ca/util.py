@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import logging
 from pathlib import Path
 
 from cryptography import x509
@@ -18,56 +19,97 @@ INT_CERT = x509.load_pem_x509_certificate((_CA_DIR / "intermediate.pem").read_by
 INT_PEM = (_CA_DIR / "intermediate.pem").read_bytes()
 INT_SKI = INT_CERT.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
 
+logger = logging.getLogger("ca_service")
+
+
+class MTLSPeerCNMiddleware:
+    """Inject SSL peer cert CN into scope["extensions"]["_peer_cn"].
+
+    Uvicorn 0.49 does not implement the ASGI TLS extension
+    (scope["extensions"]["tls"]).  This middleware reaches into uvicorn's
+    H11Protocol via send.__self__.transport to call ssl_object.getpeercert()
+    after the TLS handshake completes (CERT_REQUIRED must be set on the server
+    SSL context — see ssl_context_factory in ca_service.py).
+
+    Must wrap the outermost ASGI app so that `send` is still the raw uvicorn
+    bound method (not wrapped by Starlette internals).
+    """
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            cn = _peer_cn_from_send(send)
+            logger.debug("MTLSPeerCNMiddleware: peer CN = %r", cn)
+            scope.setdefault("extensions", {})["_peer_cn"] = cn
+        await self._app(scope, receive, send)
+
+
+def _peer_cn_from_send(send) -> str | None:
+    """Extract client cert CN from uvicorn's SSL transport via send.__self__.
+
+    send is uvicorn's H11Protocol.send bound method.
+    H11Protocol.transport is an asyncio.SSLTransport after the handshake.
+    ssl_object.getpeercert() returns the validated peer cert as a dict when
+    the SSL context has CERT_REQUIRED (mTLS); empty dict otherwise.
+    """
+    try:
+        protocol = getattr(send, "__self__", None)
+        if protocol is None:
+            return None
+        transport = getattr(protocol, "transport", None)
+        if transport is None:
+            return None
+        ssl_obj = transport.get_extra_info("ssl_object")
+        if ssl_obj is None:
+            return None
+        peer_cert = ssl_obj.getpeercert()
+        if not peer_cert:
+            return None
+        subject = {k: v for rdn in peer_cert.get("subject", ()) for k, v in rdn}
+        return subject.get("commonName")
+    except Exception:
+        logger.debug("_peer_cn_from_send: could not extract peer CN", exc_info=True)
+        return None
+
 
 def client_cn_from_mtls(request: Request) -> str | None:
-    """Extracts CN from mTLS client certificate via ASGI 'tls' extension (uvicorn 0.27+).
+    """Return CN from the verified mTLS client certificate, or None.
 
-    Works under `uvicorn --ssl-cert-reqs 2 --ssl-ca-certs root.pem`.
-    Returns None if extension is not available (fallback in error handling).
+    Primary path: reads scope["extensions"]["_peer_cn"] injected by
+    MTLSPeerCNMiddleware (uvicorn transport introspection).
+    Fallback: ASGI TLS extension (standard spec, not yet in uvicorn 0.49).
     """
-    tls_ext = request.scope.get("extensions", {}).get("tls")
-    
-    ##############################
-    print("DEBUG extensions keys:", list(request.scope.get("extensions", {}).keys()))
-    print("DEBUG tls_ext type:", type(tls_ext).__name__)
-    if isinstance(tls_ext, dict):
-        print("DEBUG tls_ext keys:", list(tls_ext.keys()))
-        chain = tls_ext.get("client_cert_chain") or []
-        print("DEBUG client_cert_chain len:", len(chain))
-        if chain:
-            first = chain[0]
-            if isinstance(first, bytes):
-                print("DEBUG chain[0] bytes prefix:", first[:32])
-            else:
-                print("DEBUG chain[0] type/value prefix:", type(first).__name__, str(first)[:64])
-    ##############################
-    
+    extensions = request.scope.get("extensions") or {}
+
+    if "_peer_cn" in extensions:
+        return extensions["_peer_cn"]
+
+    # Fallback: standard ASGI TLS extension (for future uvicorn compatibility)
+    tls_ext = extensions.get("tls")
     if not tls_ext:
         return None
-    # ASGI TLS extension passes DER-encoded client certs as bytes
     chain = tls_ext.get("client_cert_chain") or []
     if not chain:
         return None
-    leaf_pem_or_der = chain[0]
+    raw = chain[0]
     try:
-        if isinstance(leaf_pem_or_der, str) or leaf_pem_or_der.startswith(
-            b"-----BEGIN"
-        ):
-            cert = x509.load_pem_x509_certificate(
-                leaf_pem_or_der
-                if isinstance(leaf_pem_or_der, bytes)
-                else leaf_pem_or_der.encode()
-            )
+        raw_bytes = bytes(raw) if isinstance(raw, (bytearray, memoryview)) else raw
+        if isinstance(raw_bytes, bytes) and raw_bytes.startswith(b"-----BEGIN"):
+            cert = x509.load_pem_x509_certificate(raw_bytes)
+        elif isinstance(raw_bytes, bytes):
+            cert = x509.load_der_x509_certificate(raw_bytes)
         else:
-            cert = x509.load_der_x509_certificate(leaf_pem_or_der)
-    except ValueError:
+            cert = x509.load_pem_x509_certificate(raw_bytes.encode())
+    except Exception:
         return None
     cns = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
     return cns[0].value if cns else None
 
 
 def sign_csr(csr: x509.CertificateSigningRequest) -> bytes:
-    """Signs the CSR with the intermediate key. Returns the leaf cert in PEM."""
+    """Sign the CSR with the intermediate key. Returns the leaf cert in PEM."""
     now = datetime.now(timezone.utc)
     builder = (
         x509.CertificateBuilder()
@@ -106,7 +148,7 @@ def sign_csr(csr: x509.CertificateSigningRequest) -> bytes:
             critical=False,
         )
     )
-    # SAN: copy from the CSR if present - without SAN, modern clients will reject the cert
+    # SAN: copy from the CSR if present — without SAN, modern clients reject the cert
     try:
         san = csr.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
         builder = builder.add_extension(san, critical=False)
