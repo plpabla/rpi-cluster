@@ -88,34 +88,28 @@ SSL_CA_CERTS = str(_HERE / "root.pem")
 
 
 def ssl_context_factory(config, default_ssl_context_factory):
-    """Build the mTLS SSLContext from scratch.
+    """Build the mTLS SSLContext explicitly (cert chain + CA bundle + CERT_REQUIRED).
 
-    Built from scratch (not via default_ssl_context_factory) to guarantee that
-    load_verify_locations and verify_mode are applied — uvicorn 0.49's default
-    factory was observed silently dropping client certs because the CA bundle
-    was not loaded into the context, causing CERT_REQUIRED to reject every cert.
+    Built from scratch for explicit control over the trust store and verify mode.
+    TLS 1.3 is used by default.
 
-    TLS 1.2 pin: uvicorn 0.49 / CPython 3.13 / OpenSSL 3.5 negotiates the
-    X25519MLKEM768 post-quantum hybrid; client-auth under TLS 1.3 with that
-    key exchange aborts the connection silently (RST) before reaching ASGI.
-    TLS 1.2 keeps CERT_REQUIRED ON while sidestepping the bug (client cert is
-    exchanged during the handshake, not in a post-handshake flight).
-
-    Toggle with env var CA_FORCE_TLS12 (default "1"). Set =0 after OpenSSL
-    upgrade to re-enable TLS 1.3.
+    Historical note: this code briefly pinned TLS 1.2 (CA_FORCE_TLS12) on the
+    hypothesis that the X25519MLKEM768 PQ-hybrid broke client-auth under TLS 1.3.
+    That was wrong — the real cause of the handshake failures was a worker cert
+    issued with serverAuth-only EKU (no clientAuth), which fails purpose
+    verification when presented as a client cert. With correct EKUs, TLS 1.3 mTLS
+    works. The CA_FORCE_TLS12 escape hatch is kept (default off) in case a future
+    OpenSSL/loop regression resurfaces.
     """
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(SSL_CERTFILE, SSL_KEYFILE)
     ctx.load_verify_locations(SSL_CA_CERTS)
     ctx.verify_mode = ssl.CERT_REQUIRED
-    if os.environ.get("CA_FORCE_TLS12", "1") == "1":
+    if os.environ.get("CA_FORCE_TLS12", "0") == "1":
         ctx.maximum_version = ssl.TLSVersion.TLSv1_2
-        logger.info(
-            "mTLS: SSLContext built from scratch — CERT_REQUIRED, max TLS 1.2"
-            " (CA_FORCE_TLS12=1)"
-        )
+        logger.info("mTLS: SSLContext built — CERT_REQUIRED, max TLS 1.2 (CA_FORCE_TLS12=1)")
     else:
-        logger.info("mTLS: SSLContext built from scratch — CERT_REQUIRED, TLS 1.3 allowed")
+        logger.info("mTLS: SSLContext built — CERT_REQUIRED, TLS 1.3")
     return ctx
 
 
@@ -132,6 +126,5 @@ if __name__ == "__main__":
         ssl_cert_reqs=ssl.CERT_REQUIRED,  # mTLS — client cert verification stays ON
         ssl_context_factory=ssl_context_factory,
         http="h11",
-        loop="asyncio",  # rule out uvloop: silent mTLS client-cert RST suspect
-        log_level="debug",
+        log_level="info",
     )

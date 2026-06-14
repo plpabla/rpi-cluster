@@ -15,14 +15,21 @@
 #                                      client/ca-server.fullchain.pem
 #
 #   pi-orch (mTLS client)              ca/root.pem           <- trust anchor
+#                                      ca/intermediate.pem   <- chain/verify material
 #                                      client/orch.key
 #                                      client/orch.pem
 #                                      client/orch.fullchain.pem
 #
 #   pi-w1  (mTLS server)               ca/root.pem           <- trust anchor
+#                                      ca/intermediate.pem   <- chain/verify material
 #                                      client/worker1.key
 #                                      client/worker1.pem
 #                                      client/worker1.fullchain.pem
+#
+# intermediate.pem (the cert, NOT the key) is a public chain link: every node
+# needs the CURRENT one to verify leaves up to root. Omitting it left pi-w1 with
+# a stale intermediate after a CA regen, breaking `openssl verify` of renewed
+# leaves (SKI/AKI mismatch). Only intermediate.KEY stays exclusive to pi-ca.
 #
 # SECURITY: root.key is deliberately NOT distributed. Nothing on the Pis uses it
 # (the CA service signs with the INTERMEDIATE key). It stays offline in WSL.
@@ -31,10 +38,13 @@
 # loads certs by relative path (pki/ca/root.pem, pki/client/ca-server.key, ...).
 #
 # AUTH: Git Bash ships OpenSSH but not sshpass, and Windows OpenSSH can't do
-# ControlMaster multiplexing (no Unix sockets). So each host's whole file set is
-# streamed through a SINGLE ssh connection via tar — you're prompted for each
-# Pi's password exactly ONCE. To avoid prompts entirely, set up key-based auth
-# (ssh-copy-id) beforehand.
+# ControlMaster multiplexing (no Unix sockets). Each host's whole file set is
+# streamed through a SINGLE ssh connection via tar. Because every Pi shares the
+# same password, we read it ONCE up front and feed it to every ssh via OpenSSH's
+# SSH_ASKPASS helper (SSH_ASKPASS_REQUIRE=force, OpenSSH >= 8.4) — so you type
+# the password a single time for the whole run. To skip the prompt entirely, set
+# up key-based auth (ssh-copy-id) beforehand; an empty password falls back to
+# normal per-connection interactive prompts.
 #
 # Usage:   pki/distribute_keys.sh [--only ca|orch|w1] [host ...]
 #   --only <role>   push to a single role only
@@ -66,12 +76,14 @@ CA_FILES=(
 )
 ORCH_FILES=(
     ca/root.pem
+    ca/intermediate.pem
     client/orch.key
     client/orch.pem
     client/orch.fullchain.pem
 )
 W1_FILES=(
     ca/root.pem
+    ca/intermediate.pem
     client/worker1.key
     client/worker1.pem
     client/worker1.fullchain.pem
@@ -94,6 +106,29 @@ SSH_OPTS=(
     -o ConnectTimeout=10
 )
 
+# --- single password prompt -------------------------------------------------
+# Ask once and reuse for every host (they share a password). We hand it to ssh
+# through an SSH_ASKPASS helper script with SSH_ASKPASS_REQUIRE=force so OpenSSH
+# uses it even though a tty is attached. An empty answer (just Enter) leaves the
+# helper unset, so ssh falls back to prompting interactively per connection
+# (e.g. when you rely on key-based auth).
+read -rsp "Password for ${REMOTE_USER}@<all hosts> (blank = prompt per host / use keys): " SSH_PASSWORD
+echo
+if [[ -n "$SSH_PASSWORD" ]]; then
+    ASKPASS_HELPER="$(mktemp)"
+    trap 'rm -f "$ASKPASS_HELPER"' EXIT
+    cat >"$ASKPASS_HELPER" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$SSH_PASSWORD"
+EOF
+    chmod 700 "$ASKPASS_HELPER"
+    export SSH_PASSWORD
+    export SSH_ASKPASS="$ASKPASS_HELPER"
+    export SSH_ASKPASS_REQUIRE=force
+    export DISPLAY="${DISPLAY:-:0}"   # harmless; satisfies older ssh builds
+    SSH_OPTS+=(-o NumberOfPasswordPrompts=1)
+fi
+
 # copy_to_host <host> <file> [file ...]
 # All of the host's files go through ONE ssh connection: tar them locally and
 # pipe into a single remote `tar -x`. The relative paths (ca/..., client/...)
@@ -110,8 +145,9 @@ copy_to_host() {
         fi
         echo "    -> $rel"
     done
-    # One password prompt: a single ssh that makes the base dir, unpacks the
-    # tar from stdin, then locks down the private keys.
+    # A single ssh per host that makes the base dir, unpacks the tar from stdin,
+    # then locks down the private keys. Auth comes from SSH_ASKPASS (set above)
+    # so no interactive prompt fires here once the password is entered.
     tar -C "$PKI_DIR" -cf - "$@" | ssh "${SSH_OPTS[@]}" "${REMOTE_USER}@${host}" "
         set -e
         mkdir -p '${REMOTE_PKI}'
