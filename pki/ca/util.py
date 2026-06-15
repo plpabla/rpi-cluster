@@ -21,6 +21,22 @@ INT_SKI = INT_CERT.extensions.get_extension_for_class(x509.SubjectKeyIdentifier)
 
 logger = logging.getLogger("ca_service")
 
+EKU_POLICY = {
+    "orchestrator.cluster.local": [
+        ExtendedKeyUsageOID.SERVER_AUTH,
+        ExtendedKeyUsageOID.CLIENT_AUTH,
+    ],
+    "worker1.cluster.local": [
+        ExtendedKeyUsageOID.SERVER_AUTH,
+        ExtendedKeyUsageOID.CLIENT_AUTH,
+    ],
+}
+DEFAULT_EKU = [ExtendedKeyUsageOID.SERVER_AUTH]
+
+
+def _eku_for(cn: str):
+    return EKU_POLICY.get(cn, DEFAULT_EKU)
+
 
 class MTLSPeerCNMiddleware:
     """Inject SSL peer cert CN into scope["extensions"]["_peer_cn"].
@@ -111,6 +127,7 @@ def client_cn_from_mtls(request: Request) -> str | None:
 def sign_csr(csr: x509.CertificateSigningRequest) -> bytes:
     """Sign the CSR with the intermediate key. Returns the leaf cert in PEM."""
     now = datetime.now(timezone.utc)
+    cn = csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
     builder = (
         x509.CertificateBuilder()
         .subject_name(csr.subject)
@@ -141,9 +158,7 @@ def sign_csr(csr: x509.CertificateSigningRequest) -> bytes:
         # leaf this CA issues cannot be reused to request the next one. Mirror the
         # local generator (generate_worker_cert.py) and stamp both EKUs.
         .add_extension(
-            x509.ExtendedKeyUsage(
-                [ExtendedKeyUsageOID.SERVER_AUTH, ExtendedKeyUsageOID.CLIENT_AUTH]
-            ),
+            x509.ExtendedKeyUsage(_eku_for(cn)),
             critical=False,
         )
         .add_extension(

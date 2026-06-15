@@ -1,28 +1,31 @@
-%% Przepływ komunikacji w klastrze PKI — Sprint 02 (v1 roboczy)
+%% Przepływ komunikacji w klastrze PKI — Sprint 07 (integracja end-to-end przez mTLS)
 %% Render: VSCode "Markdown Preview Mermaid" / mermaid.live / mmdc -i flow.mmd -o flow.png
 sequenceDiagram
     autonumber
+    actor C as laptop / curl<br/>klient mTLS
     participant O as pi-orch<br/>Orchestrator :8443
-    participant CA as pi-ca<br/>Online CA :9443
     participant W as pi-w1<br/>Worker :8443
+    participant CA as pi-ca<br/>Online CA :9443
 
     rect rgb(255,245,230)
-    Note over O,W: Faza bootstrap — każdy węzeł pobiera certyfikat leaf (mTLS)
+    Note over O,W: Faza bootstrap — każdy węzeł pobiera certyfikat leaf (mTLS, certem zasiewowym)
     O->>O: 1. Generuje klucz ECDSA P-256 + CSR
     O->>CA: 2. POST /sign-csr (CSR) · mTLS
-    CA->>CA: 3. Podpisuje leaf cert kluczem Intermediate CA
-    CA-->>O: 3. 200 OK — certyfikat leaf (PEM)
-    O->>O: 4. Startuje serwis z nowym certem
+    CA->>CA: 3. Podpisuje leaf, EKU wg CN (EKU_POLICY)
+    CA-->>O: 3. 200 OK — leaf cert (serverAuth + clientAuth)
+    O->>O: 4. exec uvicorn — start serwisu z nowym certem
 
     W->>W: 1. Generuje klucz ECDSA P-256 + CSR
     W->>CA: 2. POST /sign-csr (CSR) · mTLS
-    CA->>CA: 3. Podpisuje leaf cert kluczem Intermediate CA
-    CA-->>W: 3. 200 OK — certyfikat leaf (PEM)
-    W->>W: 4. Startuje serwis z nowym certem
+    CA->>CA: 3. Podpisuje leaf, EKU wg CN (EKU_POLICY)
+    CA-->>W: 3. 200 OK — leaf cert (serverAuth + clientAuth)
+    W->>W: 4. exec uvicorn — start serwisu z nowym certem
     end
 
     rect rgb(238,245,255)
-    Note over O,W: Faza operacyjna — ruch aplikacyjny (mTLS)
-    O->>W: POST /predict · mTLS (łańcuch Root→Inter→leaf)
-    W-->>O: 200 OK — wynik predykcji
+    Note over C,W: Faza operacyjna — ruch aplikacyjny (mTLS, łańcuch Root→Inter→leaf)
+    C->>O: POST /predict · mTLS (orch jako serwer)
+    O->>W: POST /predict · mTLS (orch jako klient, proxy)
+    W-->>O: 200 OK — {prediction: mock, node: pi-w1}
+    O-->>C: 200 OK — {orchestrator, worker_response}
     end

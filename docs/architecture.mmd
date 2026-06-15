@@ -1,21 +1,25 @@
-%% Architektura klastra PKI — Sprint 02 (v1 roboczy)
+%% Architektura klastra PKI — Sprint 07 (integracja 3 węzłów, mTLS end-to-end)
 %% Render: VSCode "Markdown Preview Mermaid" / mermaid.live / mmdc -i architecture.mmd -o architecture.png
 flowchart TD
     classDef node fill:#eef5ff,stroke:#2b6cb0,stroke-width:1px,color:#1a202c;
     classDef ca   fill:#fff5e6,stroke:#b7791f,stroke-width:2px,color:#1a202c;
+    classDef ext  fill:#f0fff4,stroke:#2f855a,stroke-width:1px,color:#1a202c;
 
-    pica["<b>pi-ca</b> — 192.168.100.181<br/>Online CA service <br/>FastAPI :9443<br/>🔑 Root CA (priv key)<br/>🔑 Intermediate CA (key + cert)"]:::ca
+    laptop["<b>laptop / curl</b><br/>klient mTLS<br/>(orch.fullchain.pem + key)"]:::ext
 
-    orch["<b>pi-orch</b> — 192.168.100.182<br/>Orchestrator · FastAPI :8443<br/>klient mTLS → worker"]:::node
+    pica["<b>pi-ca</b> — 192.168.100.181<br/>Online CA service · FastAPI :9443<br/>Root CA (priv key)<br/>Intermediate CA (key + cert)<br/>EKU per CN (EKU_POLICY)"]:::ca
 
-    w1["<b>pi-w1</b> — 192.168.100.183<br/>Worker (ML predykcja) · FastAPI :8443<br/>serwer mTLS"]:::node
+    orch["<b>pi-orch</b> — 192.168.100.182<br/>Orchestrator · FastAPI :8443<br/>serwer (/predict) + klient (→ worker)<br/>EKU: serverAuth + clientAuth"]:::node
 
-    pica --> orch
-    pica --> w1
+    w1["<b>pi-w1</b> — 192.168.100.183<br/>Worker (mock; ML = S08) · FastAPI :8443<br/>serwer (/predict) + klient (→ CA renew)<br/>EKU: serverAuth + clientAuth"]:::node
 
-    %% Faza bootstrap: każdy węzeł startuje od CSR → pi-ca (mTLS)
-    orch -. "mTLS · POST /sign-csr (CSR)" .-> pica
-    w1   -. "mTLS · POST /sign-csr (CSR)" .-> pica
+    %% Faza operacyjna: laptop → orch → worker (mTLS, łańcuch Root→Inter→leaf)
+    laptop == "mTLS · POST /predict" ==> orch
+    orch   == "mTLS · POST /predict" ==> w1
+    w1     -. "200 OK · {prediction: mock}" .-> orch
 
-    %% Faza operacyjna: orkiestrator → worker (mTLS)
-    orch == "mTLS · POST /predict" ==> w1
+    %% Faza bootstrap: każdy węzeł pobiera leaf z online CA (CSR → mTLS)
+    orch -. "bootstrap · mTLS · POST /sign-csr" .-> pica
+    w1   -. "bootstrap · mTLS · POST /sign-csr" .-> pica
+    pica -. "leaf cert (EKU wg CN)" .-> orch
+    pica -. "leaf cert (EKU wg CN)" .-> w1
