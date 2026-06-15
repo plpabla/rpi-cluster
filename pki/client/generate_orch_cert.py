@@ -76,7 +76,7 @@ leaf = (
         critical=True,
     )
     .add_extension(
-        x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), critical=False
+        x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH, ExtendedKeyUsageOID.SERVER_AUTH]), critical=False
     )
     .add_extension(
         csr.extensions.get_extension_for_class(x509.SubjectAlternativeName).value,

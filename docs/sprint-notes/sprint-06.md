@@ -1,7 +1,7 @@
 # Sprint 06 — Online CA service (`POST /sign-csr`)
 
 **Data:** 2026-06-12 (ostatnia aktualizacja: 2026-06-13)
-**Czas spędzony:** ~210 min — większość poszła na pościg za TRZEMA fałszywymi hipotezami transportowymi
+**Czas spędzony:** 4.5h — większość poszła na pościg za TRZEMA fałszywymi hipotezami transportowymi
 **Status:** ✅ DZIAŁA na **TLS 1.2 i TLS 1.3** — `pi-w1` dostaje HTTP 200 + leaf-cert. Prawdziwa przyczyna: **brak `clientAuth` w EKU certu workera** (jeden root cause, nie trzy blokady). TLS 1.2 pin zdjęty, domyślnie TLS 1.3.
 
 ## Cel

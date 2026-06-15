@@ -7,12 +7,12 @@ zapisuje zwrócony fullchain do pliku.
 import argparse
 import ipaddress
 from pathlib import Path
-
-import httpx
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+
+from cluster.shared.mtls_config import mtls_client
 
 
 def build_csr(cn: str, hostname: str, ip: str):
@@ -50,11 +50,7 @@ def main():
     key, csr = build_csr(args.cn, args.hostname, args.ip)
     csr_pem = csr.public_bytes(serialization.Encoding.PEM)
 
-    with httpx.Client(
-        cert=(args.client_cert, args.client_key),
-        verify=args.root,
-        timeout=10.0,
-    ) as c:
+    with mtls_client(args.client_cert, args.client_key, args.root) as c:
         r = c.post(args.ca_url, content=csr_pem,
                    headers={"Content-Type": "application/x-pem-file"})
     if r.status_code != 200:
